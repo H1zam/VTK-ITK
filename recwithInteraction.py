@@ -1,6 +1,7 @@
 import vtk
 import itk
 import numpy as np
+import math
 from vtk.util.numpy_support import numpy_to_vtk
 
 image1 = itk.imread('Data/case6_gre1.nrrd', itk.F)
@@ -19,15 +20,15 @@ optimizer = OptimizerType.New()
 metric = MetricType.New()
 registration = RegistrationType.New()
 
+optimizer.SetLearningRate(4.0)
+optimizer.SetMinimumStepLength(0.01)
+optimizer.SetNumberOfIterations(200)
+
 registration.SetMetric(metric)
 registration.SetOptimizer(optimizer)
 registration.SetInitialTransform(transform)
 registration.SetFixedImage(fixed_image)
 registration.SetMovingImage(moving_image)
-
-optimizer.SetLearningRate(4.0)
-optimizer.SetMinimumStepLength(0.01)
-optimizer.SetNumberOfIterations(200)
 
 registration.Update()
 
@@ -45,13 +46,31 @@ vtk_image.SetOrigin(output_image.GetOrigin())
 vtk_image.SetSpacing(output_image.GetSpacing())
 vtk_image.GetPointData().SetScalars(vtk_data_array)
 
+reader = vtk.vtkNrrdReader()
+reader.SetFileName('Data/case6_gre1.nrrd')
+reader.Update()
+
+(xMin, xMax, yMin, yMax, zMin, zMax) = vtk_image.GetExtent()
+(xSpacing, ySpacing, zSpacing) = vtk_image.GetSpacing()
+(x0, y0, z0) = vtk_image.GetOrigin()
+center = [
+    x0 + xSpacing * 0.5 * (xMin + xMax),
+    y0 + ySpacing * 0.5 * (yMin + yMax),
+    z0 + zSpacing * 0.5 * (zMin + zMax)
+]
+
+coronal = vtk.vtkMatrix4x4()
+coronal.DeepCopy((1, 0, 0, center[0],
+                  0, 0, 1, center[1],
+                  0, -1, 0, center[2],
+                  0, 0, 0, 1))
+
 reslice = vtk.vtkImageReslice()
 reslice.SetInputData(vtk_image)
 reslice.SetOutputDimensionality(2)
 reslice.SetInterpolationModeToLinear()
-
-matrix = vtk.vtkMatrix4x4()
-reslice.SetResliceAxes(matrix)
+reslice.SetResliceAxes(coronal)
+reslice.Update()
 
 table = vtk.vtkLookupTable()
 table.SetRange(np.min(np_array), np.max(np_array))
