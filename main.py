@@ -1,114 +1,102 @@
 import vtk
+import itk
+import numpy as np
+import math
+from vtk.util.numpy_support import numpy_to_vtk
 
-# Start by loading some data.
-reader = vtk.vtkNrrdReader()
-reader.SetFileName('Data/case6_gre1.nrrd')
-reader.Update()
+image1 = itk.imread('Data/case6_gre1.nrrd', itk.F)
+image2 = itk.imread('Data/case6_gre2.nrrd', itk.F)
 
-reader2 = vtk.vtkNrrdReader()
-reader2.SetFileName('Data/case6_gre2.nrrd')
-reader2.Update()
+moving_image = image1
+fixed_image = image2
 
-# Calculate the center of the volume
-(xMin, xMax, yMin, yMax, zMin, zMax) = reader.GetExecutive().GetWholeExtent(reader.GetOutputInformation(0))
-(xSpacing, ySpacing, zSpacing) = reader.GetOutput().GetSpacing()
-(x0, y0, z0) = reader.GetOutput().GetOrigin()
+TransformType = itk.Euler3DTransform[itk.D]
+OptimizerType = itk.RegularStepGradientDescentOptimizerv4[itk.D]
+MetricType = itk.MeanSquaresImageToImageMetricv4[fixed_image, moving_image]
+RegistrationType = itk.ImageRegistrationMethodv4[fixed_image, moving_image]
 
-center = [x0 + xSpacing * 0.5 * (xMin + xMax),
-          y0 + ySpacing * 0.5 * (yMin + yMax),
-          z0 + zSpacing * 0.5 * (zMin + zMax)]
+transform = TransformType.New()
+optimizer = OptimizerType.New()
+metric = MetricType.New()
+registration = RegistrationType.New()
 
-(xMin2, xMax2, yMin2, yMax2, zMin2, zMax2) = reader2.GetExecutive().GetWholeExtent(reader2.GetOutputInformation(0))
-(xSpacing2, ySpacing2, zSpacing2) = reader2.GetOutput().GetSpacing()
-(x02, y02, z02) = reader2.GetOutput().GetOrigin()
+optimizer.SetLearningRate(4.0)
+optimizer.SetMinimumStepLength(0.01)
+optimizer.SetNumberOfIterations(200)
 
-center2 = [x02 + xSpacing2 * 0.5 * (xMin2 + xMax2),
-           y02 + ySpacing2 * 0.5 * (yMin2 + yMax2),
-           z02 + zSpacing2 * 0.5 * (zMin2 + zMax2)]
+registration.SetMetric(metric)
+registration.SetOptimizer(optimizer)
+registration.SetInitialTransform(transform)
+registration.SetFixedImage(fixed_image)
+registration.SetMovingImage(moving_image)
 
-# Matrices for axial, coronal, sagittal, oblique view orientations
+registration.Update()
+
+resampler = itk.ResampleImageFilter.New(Input=moving_image, Transform=registration.GetTransform(), UseReferenceImage=True, ReferenceImage=fixed_image)
+resampler.SetInterpolator(itk.LinearInterpolateImageFunction.New(fixed_image))
+resampler.Update()
+
+output_image = resampler.GetOutput()
+
+np_array = itk.array_from_image(output_image)
+vtk_data_array = numpy_to_vtk(np_array.ravel(), deep=True, array_type=vtk.VTK_FLOAT)
+vtk_image = vtk.vtkImageData()
+vtk_image.SetDimensions(output_image.GetLargestPossibleRegion().GetSize())
+vtk_image.SetOrigin(output_image.GetOrigin())
+vtk_image.SetSpacing(output_image.GetSpacing())
+vtk_image.GetPointData().SetScalars(vtk_data_array)
+
+
+
+(xMin, xMax, yMin, yMax, zMin, zMax) = vtk_image.GetExtent()
+(xSpacing, ySpacing, zSpacing) = vtk_image.GetSpacing()
+(x0, y0, z0) = vtk_image.GetOrigin()
+center = [
+    x0 + xSpacing * 0.5 * (xMin + xMax),
+    y0 + ySpacing * 0.5 * (yMin + yMax),
+    z0 + zSpacing * 0.5 * (zMin + zMax)
+]
+
 coronal = vtk.vtkMatrix4x4()
 coronal.DeepCopy((1, 0, 0, center[0],
                   0, 0, 1, center[1],
                   0, -1, 0, center[2],
                   0, 0, 0, 1))
 
-axial2 = vtk.vtkMatrix4x4()
-axial2.DeepCopy((1, 0, 0, center2[0],
-                 0, 1, 0, center2[1],
-                 0, 0, 1, center2[2],
-                 0, 0, 0, 1))
-
-# Extract a slice in the desired orientation
 reslice = vtk.vtkImageReslice()
-reslice.SetInputConnection(reader.GetOutputPort())
+reslice.SetInputData(vtk_image)
 reslice.SetOutputDimensionality(2)
-reslice.SetResliceAxes(coronal)
 reslice.SetInterpolationModeToLinear()
+reslice.SetResliceAxes(coronal)
+reslice.Update()
 
-reslice2 = vtk.vtkImageReslice()
-reslice2.SetInputConnection(reader2.GetOutputPort())
-reslice2.SetOutputDimensionality(2)
-reslice2.SetResliceAxes(axial2)
-reslice2.SetInterpolationModeToLinear()
-
-# Create a greyscale lookup table
 table = vtk.vtkLookupTable()
-table.SetRange(300, 2000)  # image intensity range
-table.SetValueRange(0.0, 1.0)  # from black to white
-table.SetSaturationRange(0.0, 0.0)  # no color saturation
+table.SetRange(np.min(np_array), np.max(np_array))
+table.SetValueRange(0.0, 1.0)
+table.SetSaturationRange(0.0, 0.0)
 table.SetRampToLinear()
 table.Build()
 
-table2 = vtk.vtkLookupTable()
-table2.SetRange(300, 2000)  # image intensity range
-table2.SetValueRange(0.0, 1.0)  # from black to white
-table2.SetSaturationRange(0.0, 0.0)  # no color saturation
-table2.SetRampToLinear()
-table2.Build()
-
-# Map the image through the lookup table
 color = vtk.vtkImageMapToColors()
 color.SetLookupTable(table)
 color.SetInputConnection(reslice.GetOutputPort())
 
-color2 = vtk.vtkImageMapToColors()
-color2.SetLookupTable(table2)
-color2.SetInputConnection(reslice2.GetOutputPort())
+actor_resliced = vtk.vtkImageActor()
+actor_resliced.GetMapper().SetInputConnection(color.GetOutputPort())
 
-# Display the image
-actor = vtk.vtkImageActor()
-actor.GetMapper().SetInputConnection(color.GetOutputPort())
+renderer_resliced = vtk.vtkRenderer()
+renderer_resliced.AddActor(actor_resliced)
+renderer_resliced.ResetCamera()
 
-actor2 = vtk.vtkImageActor()
-actor2.GetMapper().SetInputConnection(color2.GetOutputPort())
+window_resliced = vtk.vtkRenderWindow()
+window_resliced.AddRenderer(renderer_resliced)
+window_resliced.SetWindowName("Image Recalage")
 
-renderer = vtk.vtkRenderer()
-renderer.AddActor(actor)
-
-renderer2 = vtk.vtkRenderer()
-renderer2.AddActor(actor2)
-
-window = vtk.vtkRenderWindow()
-window.AddRenderer(renderer)
-window.SetWindowName("gre1")
-
-window2 = vtk.vtkRenderWindow()
-window2.AddRenderer(renderer2)
-window2.SetWindowName("gre2")
-
-# Set up the interaction
 interactorStyle = vtk.vtkInteractorStyleImage()
-interactor = vtk.vtkRenderWindowInteractor()
-interactor.SetInteractorStyle(interactorStyle)
-window.SetInteractor(interactor)
+interactor_resliced = vtk.vtkRenderWindowInteractor()
+interactor_resliced.SetInteractorStyle(interactorStyle)
+window_resliced.SetInteractor(interactor_resliced)
 
-interactorStyle2 = vtk.vtkInteractorStyleImage()
-interactor2 = vtk.vtkRenderWindowInteractor()
-interactor2.SetInteractorStyle(interactorStyle2)
-window2.SetInteractor(interactor2)
-
-# Create callbacks for slicing the image
 actions = {"Slicing": 0}
 
 def ButtonCallback(obj, event):
@@ -118,60 +106,30 @@ def ButtonCallback(obj, event):
         actions["Slicing"] = 0
 
 def MouseMoveCallback(obj, event):
-    (lastX, lastY) = interactor.GetLastEventPosition()
-    (mouseX, mouseY) = interactor.GetEventPosition()
+    (lastX, lastY) = interactor_resliced.GetLastEventPosition()
+    (mouseX, mouseY) = interactor_resliced.GetEventPosition()
     if actions["Slicing"] == 1:
         deltaY = mouseY - lastY
         reslice.Update()
         sliceSpacing = reslice.GetOutput().GetSpacing()[2]
         matrix = reslice.GetResliceAxes()
-        # move the center point that we are slicing through
         center = matrix.MultiplyPoint((0, 0, sliceSpacing * deltaY, 1))
         matrix.SetElement(0, 3, center[0])
         matrix.SetElement(1, 3, center[1])
         matrix.SetElement(2, 3, center[2])
-        window.Render()
+        reslice.SetResliceAxes(matrix)
+        window_resliced.Render()
     else:
         interactorStyle.OnMouseMove()
-
-def MouseMoveCallback2(obj, event):
-    (lastX, lastY) = interactor2.GetLastEventPosition()
-    (mouseX, mouseY) = interactor2.GetEventPosition()
-    if actions["Slicing"] == 1:
-        deltaY = mouseY - lastY
-        reslice2.Update()
-        sliceSpacing = reslice2.GetOutput().GetSpacing()[2]
-        matrix = reslice2.GetResliceAxes()
-        # move the center point that we are slicing through
-        center = matrix.MultiplyPoint((0, 0, sliceSpacing * deltaY, 1))
-        matrix.SetElement(0, 3, center[0])
-        matrix.SetElement(1, 3, center[1])
-        matrix.SetElement(2, 3, center[2])
-        window2.Render()
-    else:
-        interactorStyle2.OnMouseMove()
 
 interactorStyle.AddObserver("MouseMoveEvent", MouseMoveCallback)
 interactorStyle.AddObserver("LeftButtonPressEvent", ButtonCallback)
 interactorStyle.AddObserver("LeftButtonReleaseEvent", ButtonCallback)
 
-interactorStyle2.AddObserver("MouseMoveEvent", MouseMoveCallback2)
-interactorStyle2.AddObserver("LeftButtonPressEvent", ButtonCallback)
-interactorStyle2.AddObserver("LeftButtonReleaseEvent", ButtonCallback)
+window_resliced.Render()
+interactor_resliced.Initialize()
+interactor_resliced.Start()
 
-# Start interaction
-window.Render()
-interactor.Initialize()
-
-window2.Render()
-interactor2.Initialize()
-
-interactor.Start()
-interactor2.Start()
-
-del renderer
-del window
-del interactor
-del renderer2
-del window2
-del interactor2
+del renderer_resliced
+del window_resliced
+del interactor_resliced
