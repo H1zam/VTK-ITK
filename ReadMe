@@ -1,2 +1,5 @@
-Pour lancer le projet, exécutez la commande suivante :
+Pour lancer le projet (partie recalage), exécutez la commande suivante :
 python3 main.py
+
+Pour exécutez la partie segmentation:
+python3 seg.py
